@@ -1,0 +1,47 @@
+@import "tailwindcss";
+
+@layer base {
+  :root {
+    --m3-surface: #0f1115;
+    --m3-surface-container-low: #171920;
+    --m3-surface-container: #1d2029;
+    --m3-surface-container-high: #242833;
+    --m3-surface-container-highest: #2d313f;
+    --m3-primary: #5eead4;
+    --m3-primary-container: #0d4239;
+    --m3-on-primary-container: #99f6e4;
+  }
+
+  body {
+    background-color: #0f1115;
+    color: #e2e8f0;
+    font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+    -webkit-tap-highlight-color: transparent;
+    touch-action: manipulation;
+    user-select: none;
+    -webkit-user-select: none;
+  }
+}
+
+/* Safe area support for mobile devices (iOS home bar & notch) */
+.pb-safe {
+  padding-bottom: max(0.5rem, env(safe-area-inset-bottom));
+}
+
+.pt-safe {
+  padding-top: max(0.5rem, env(safe-area-inset-top));
+}
+
+/* Material 3 active state ripple feeling */
+.m3-pressable {
+  transition: transform 0.12s cubic-bezier(0.2, 0, 0, 1), background-color 0.15s ease;
+}
+.m3-pressable:active {
+  transform: scale(0.97);
+}
+
+/* Score number glow & typography */
+.score-display {
+  font-feature-settings: "tnum";
+  font-variant-numeric: tabular-nums;
+}

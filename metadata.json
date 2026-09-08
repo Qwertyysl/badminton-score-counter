@@ -1,0 +1,7 @@
+{
+  "name": "Badminton Score Counter",
+  "description": "Aplikasi papan skor badminton kompak dengan penjejak servis, pemasa perlawanan, mod 15 & 21 mata, fungsi undo/reset, dan buku peraturan BWF.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
+
