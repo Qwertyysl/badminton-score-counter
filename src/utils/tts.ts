@@ -1,5 +1,5 @@
 /**
- * Free Client-Side Text-To-Speech (TTS) using Web Speech API in Bahasa Melayu
+ * Keyless neural Text-To-Speech (TTS) in Bahasa Melayu with native browser fallback.
  */
 
 export type TTSMode = 'auto' | 'manual' | 'off';
@@ -15,7 +15,10 @@ export interface TTSOptions {
 class MalayTTSManager {
   private synth: SpeechSynthesis | null = null;
   private malayVoice: SpeechSynthesisVoice | null = null;
-  private voicesLoaded: boolean = false;
+  private nativeTimer: ReturnType<typeof setTimeout> | null = null;
+  private audio: HTMLAudioElement | null = null;
+  private audioUrl: string | null = null;
+  private generation = 0;
   
   public options: TTSOptions = {
     mode: 'auto',
@@ -26,7 +29,7 @@ class MalayTTSManager {
   };
 
   constructor() {
-    if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
+    if (typeof window !== 'undefined' && window.speechSynthesis) {
       this.synth = window.speechSynthesis;
       this.initVoices();
       if (this.synth.onvoiceschanged !== undefined) {
@@ -40,48 +43,173 @@ class MalayTTSManager {
     const voices = this.synth.getVoices();
     if (!voices || voices.length === 0) return;
 
-    // Look for Malay (ms-MY) first, then Indonesian (id-ID) which is phonetically very close, or default
-    const msVoice = voices.find(v => v.lang.toLowerCase().startsWith('ms') || v.lang.toLowerCase().replace('_', '-').startsWith('ms-my'));
-    const idVoice = voices.find(v => v.lang.toLowerCase().startsWith('id') || v.lang.toLowerCase().replace('_', '-').startsWith('id-id'));
-    
-    this.malayVoice = msVoice || idVoice || voices.find(v => v.default) || voices[0] || null;
-    this.voicesLoaded = true;
+    // Prefer a Malaysian Malay voice, then another Malay locale, then Indonesian.
+    // Never explicitly select an English (or arbitrary default) voice for Malay text.
+    const normalizedLang = (voice: SpeechSynthesisVoice) => voice.lang.toLowerCase().replace('_', '-');
+    const msMyVoice = voices.find(v => normalizedLang(v) === 'ms-my');
+    const msVoice = voices.find(v => normalizedLang(v) === 'ms' || normalizedLang(v).startsWith('ms-'));
+    const idIdVoice = voices.find(v => normalizedLang(v) === 'id-id');
+    const idVoice = voices.find(v => normalizedLang(v) === 'id' || normalizedLang(v).startsWith('id-'));
+
+    this.malayVoice = msMyVoice || msVoice || idIdVoice || idVoice || null;
   }
 
   public isSupported(): boolean {
-    return typeof window !== 'undefined' && 'speechSynthesis' in window;
+    if (typeof window === 'undefined') return false;
+    const remoteSupported = typeof window.fetch === 'function' && typeof window.Audio === 'function';
+    const nativeSupported = Boolean(window.speechSynthesis);
+    return remoteSupported || nativeSupported;
   }
 
   public speak(text: string, force: boolean = false) {
-    if (!this.isSupported() || !this.synth) return;
+    if (!this.isSupported()) return;
     if (this.options.mode === 'off' && !force) return;
+
+    const generation = ++this.generation;
+    this.cancelCurrentSpeech();
+    void this.speakRemote(text, generation);
+  }
+
+  private isCurrent(generation: number): boolean {
+    return generation === this.generation;
+  }
+
+  private cancelCurrentSpeech() {
+    if (this.nativeTimer !== null) {
+      clearTimeout(this.nativeTimer);
+      this.nativeTimer = null;
+    }
+
+    try {
+      this.synth?.cancel();
+    } catch {
+      // Native speech cancellation is best effort.
+    }
+
+    this.cleanupAudio();
+  }
+
+  private cleanupAudio() {
+    const audio = this.audio;
+    const audioUrl = this.audioUrl;
+    this.audio = null;
+    this.audioUrl = null;
+
+    if (audio) {
+      audio.onended = null;
+      audio.onerror = null;
+      try {
+        audio.pause();
+        audio.currentTime = 0;
+        audio.removeAttribute('src');
+        audio.load();
+      } catch {
+        // Audio cleanup is best effort.
+      }
+    }
+
+    if (audioUrl && typeof URL !== 'undefined') {
+      try {
+        URL.revokeObjectURL(audioUrl);
+      } catch {
+        // Object URL cleanup is best effort.
+      }
+    }
+  }
+
+  private async speakRemote(text: string, generation: number): Promise<void> {
+    try {
+      const response = await window.fetch('/api/tts', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          text,
+          rate: this.options.rate,
+          pitch: this.options.pitch,
+          volume: this.options.volume,
+        }),
+      });
+
+      if (!this.isCurrent(generation)) return;
+      if (!response.ok) throw new Error('TTS request failed');
+
+      const blob = await response.blob();
+      if (!this.isCurrent(generation)) return;
+      if (!blob || blob.size === 0) throw new Error('TTS response was empty');
+
+      this.playRemoteAudio(blob, text, generation);
+    } catch {
+      if (this.isCurrent(generation)) {
+        this.speakNative(text, generation);
+      }
+    }
+  }
+
+  private playRemoteAudio(blob: Blob, text: string, generation: number) {
+    if (!this.isCurrent(generation) || typeof URL === 'undefined' || typeof URL.createObjectURL !== 'function') {
+      throw new Error('Audio playback is unavailable');
+    }
+
+    const audioUrl = URL.createObjectURL(blob);
+    let audio: HTMLAudioElement;
+    try {
+      audio = new window.Audio();
+    } catch (error) {
+      URL.revokeObjectURL(audioUrl);
+      throw error;
+    }
+    audio.src = audioUrl;
+    audio.volume = Math.max(0, Math.min(1, Number.isFinite(this.options.volume) ? this.options.volume : 1));
+    this.audio = audio;
+    this.audioUrl = audioUrl;
+
+    let finished = false;
+    const finish = (fallback: boolean) => {
+      if (finished) return;
+      finished = true;
+      const current = this.isCurrent(generation);
+      if (this.audio === audio) this.cleanupAudio();
+      if (fallback && current) this.speakNative(text, generation);
+    };
+
+    audio.onended = () => finish(false);
+    audio.onerror = () => finish(true);
+
+    try {
+      const playResult = audio.play();
+      if (playResult && typeof playResult.catch === 'function') {
+        playResult.catch(() => finish(true));
+      }
+    } catch {
+      finish(true);
+    }
+  }
+
+  private speakNative(text: string, generation: number) {
+    if (!this.isCurrent(generation) || !this.synth) return;
 
     try {
       this.initVoices();
-      this.synth.cancel();
-      if (this.synth.paused) {
-        this.synth.resume();
-      }
-
       const utterance = new SpeechSynthesisUtterance(text);
-      if (this.malayVoice) {
-        utterance.voice = this.malayVoice;
-      }
+      if (this.malayVoice) utterance.voice = this.malayVoice;
       utterance.lang = this.malayVoice?.lang || 'ms-MY';
       utterance.rate = this.options.rate;
       utterance.pitch = this.options.pitch;
       utterance.volume = this.options.volume;
 
-      // Chrome/Android workaround: small delay ensures cancel() completes before speak()
-      setTimeout(() => {
-        if (!this.synth) return;
-        if (this.synth.paused) {
-          this.synth.resume();
+      // Chrome/Android workaround: small delay ensures cancel() completes before speak().
+      this.nativeTimer = setTimeout(() => {
+        this.nativeTimer = null;
+        if (!this.isCurrent(generation) || !this.synth) return;
+        try {
+          if (this.synth.paused) this.synth.resume();
+          this.synth.speak(utterance);
+        } catch {
+          // Speech synthesis fails gracefully if blocked by browser autoplay policies.
         }
-        this.synth.speak(utterance);
       }, 15);
     } catch {
-      // Speech synthesis fails gracefully if blocked by browser autoplay policies
+      // Speech synthesis fails gracefully if unavailable or blocked.
     }
   }
 
